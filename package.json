@@ -1,0 +1,35 @@
+{
+    "name": "vibe-architect",
+    "version": "1.0.0",
+    "description": "The Ultimate Agentic UI & Architect for Vibe Coding",
+    "main": "src/main/main.js",
+    "scripts": {
+        "start": "electron .",
+        "dev": "vite",
+        "build": "vite build && electron-builder",
+        "lint": "eslint . --ext .js,.jsx,.ts,.tsx"
+    },
+    "dependencies": {
+        "electron-is-dev": "^2.0.0",
+        "framer-motion": "^11.0.0",
+        "lucide-react": "^0.344.0",
+        "monaco-editor": "^0.47.0",
+        "@monaco-editor/react": "^4.6.0",
+        "react": "^18.2.0",
+        "react-dom": "^18.2.0",
+        "xterm": "^5.3.0",
+        "zustand": "^4.5.0"
+    },
+    "devDependencies": {
+        "@types/react": "^18.2.0",
+        "@types/react-dom": "^18.2.0",
+        "autoprefixer": "^10.4.17",
+        "electron": "^29.0.0",
+        "electron-builder": "^24.9.1",
+        "postcss": "^8.4.35",
+        "tailwindcss": "^3.4.1",
+        "typescript": "^5.3.3",
+        "vite": "^5.1.0",
+        "@vitejs/plugin-react": "^4.2.1"
+    }
+}
