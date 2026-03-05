@@ -30,6 +30,10 @@ class InstructionalBrainGenerator:
         if brain.gemini_md:
             self._write_file_safe(self.agent_dir / "GEMINI.md", brain.gemini_md)
 
+        # 1.5 Context (CONTEXT.md)
+        if getattr(brain, "context_md", None):
+            self._write_file_safe(self.agent_dir / "CONTEXT.md", brain.context_md)
+
         # 2. Metadata Injection (metadata.json)
         if brain.metadata_json:
             self._write_file_safe(
@@ -80,6 +84,8 @@ class InstructionalBrainGenerator:
                 f"[INFO] File {filepath.name} already exists. Skipping to preserve manual changes."
             )
             return
+
+        filepath.parent.mkdir(parents=True, exist_ok=True)
 
         with open(filepath, "w", encoding="utf-8") as f:
             f.write(content)

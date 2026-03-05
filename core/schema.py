@@ -84,6 +84,7 @@ class AgentWorkflow(AgentFile):
 
 class InstructionalBrain(BaseModel):
     gemini_md: str = ""
+    context_md: str = ""
     metadata_json: Dict[str, Any] = Field(default_factory=dict)
     rules: List[AgentRule] = Field(default_factory=list)
     workflows: List[AgentWorkflow] = Field(default_factory=list)
