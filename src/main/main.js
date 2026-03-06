@@ -1,5 +1,6 @@
 const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
+const fs = require('fs');
 const isDev = !app.isPackaged;
 
 let mainWindow;
@@ -36,6 +37,67 @@ ipcMain.handle('select-folder', async () => {
         title: 'Select Project Directory',
     });
     return result.canceled ? null : result.filePaths[0];
+});
+
+ipcMain.handle('read-dir', async (event, dirPath) => {
+    try {
+        const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+        return entries.map(dirent => ({
+            name: dirent.name,
+            isDirectory: dirent.isDirectory(),
+            path: path.join(dirPath, dirent.name)
+        })).sort((a, b) => b.isDirectory - a.isDirectory || a.name.localeCompare(b.name));
+    } catch (e) {
+        console.error("Failed to read directory:", e);
+        return [];
+    }
+});
+
+ipcMain.handle('read-file', async (event, filePath) => {
+    try {
+        return fs.readFileSync(filePath, 'utf-8');
+    } catch (e) {
+        console.error("Failed to read file:", e);
+        return null;
+    }
+});
+
+ipcMain.handle('save-file', async (event, filePath, content) => {
+    try {
+        fs.writeFileSync(filePath, content, 'utf-8');
+        return { success: true };
+    } catch (e) {
+        console.error("Failed to save file:", e);
+        return { success: false, error: e.message };
+    }
+});
+
+ipcMain.handle('delete-file', async (event, filePath) => {
+    try {
+        if (fs.existsSync(filePath)) {
+            fs.unlinkSync(filePath);
+        }
+        return { success: true };
+    } catch (e) {
+        console.error("Failed to delete file:", e);
+        return { success: false, error: e.message };
+    }
+});
+
+let fileWatcher = null;
+ipcMain.handle('watch-dir', (event, dirPath) => {
+    if (fileWatcher) fileWatcher.close();
+    try {
+        fileWatcher = fs.watch(dirPath, { recursive: true }, (eventType, filename) => {
+            if (mainWindow && !mainWindow.isDestroyed()) {
+                mainWindow.webContents.send('file-changed', filename);
+            }
+        });
+        return { success: true };
+    } catch (e) {
+        console.error("Failed to watch dir:", e);
+        return { success: false, error: e.message };
+    }
 });
 
 const WebSocket = require('ws');
@@ -87,6 +149,34 @@ ipcMain.handle('start-agent-loop', async (event, vibe, projectPath) => {
             console.error('Orchestrator WebSocket error:', err);
             if (mainWindow) {
                 mainWindow.webContents.send('backend-status', 'error');
+            }
+        });
+
+        ipcMain.removeAllListeners('approve-deployment');
+        ipcMain.on('approve-deployment', () => {
+            if (agentWebSocket && agentWebSocket.readyState === WebSocket.OPEN) {
+                agentWebSocket.send(JSON.stringify({ action: "USER_APPROVAL" }));
+            }
+        });
+
+        ipcMain.removeAllListeners('next-phase');
+        ipcMain.on('next-phase', () => {
+            if (agentWebSocket && agentWebSocket.readyState === WebSocket.OPEN) {
+                agentWebSocket.send(JSON.stringify({ action: "NEXT_PHASE" }));
+            }
+        });
+
+        ipcMain.removeAllListeners('stop-generation');
+        ipcMain.on('stop-generation', () => {
+            if (agentWebSocket && agentWebSocket.readyState === WebSocket.OPEN) {
+                agentWebSocket.send(JSON.stringify({ action: "STOP" }));
+            }
+        });
+
+        ipcMain.removeAllListeners('retry-pipeline');
+        ipcMain.on('retry-pipeline', () => {
+            if (agentWebSocket && agentWebSocket.readyState === WebSocket.OPEN) {
+                agentWebSocket.send(JSON.stringify({ action: "RETRY_PIPELINE" }));
             }
         });
 

@@ -1,7 +1,9 @@
 from fastapi import FastAPI, WebSocket
 from fastapi.responses import StreamingResponse
 from core.orchestrator import Orchestrator
-from core.schema import AgentMessage
+from core.schema import AgentMessage, Manifest
+from core.state_manager import StateManager
+from core.agents.chat_agent import ChatAgent
 import json
 import asyncio
 
@@ -18,18 +20,321 @@ async def pipeline_websocket(websocket: WebSocket, project_path: str, vibe: str)
     await websocket.accept()
     orchestrator = Orchestrator(project_path)
 
+    # Listen for approve command in background
+    approval_event = asyncio.Event()
+    next_phase_event = asyncio.Event()
+
+    app.state.pipeline_tasks = getattr(app.state, "pipeline_tasks", {})
+
+    async def listen_for_approval():
+        try:
+            while True:
+                data = await websocket.receive_text()
+                try:
+                    payload = json.loads(data)
+                    if payload.get("action") == "USER_APPROVAL":
+                        approval_event.set()
+                    elif payload.get("action") == "NEXT_PHASE":
+                        next_phase_event.set()
+                    elif payload.get("action") == "STOP":
+                        task = app.state.pipeline_tasks.get(project_path)
+                        if task and not task.done():
+                            task.cancel()
+                    elif payload.get("action") == "RETRY_PIPELINE":
+                        # Cancel old task just in case
+                        old_task = app.state.pipeline_tasks.get(project_path)
+                        if old_task and not old_task.done():
+                            old_task.cancel()
+                        # Clear queue
+                        while not pipeline_queue.empty():
+                            pipeline_queue.get_nowait()
+
+                        # Start new task with resume_pipeline
+                        async def run_resume_task():
+                            try:
+                                async for message in orchestrator.resume_pipeline(vibe):
+                                    if interrupt_event.is_set():
+                                        pass
+                                    await pipeline_queue.put(message)
+                                await pipeline_queue.put(None)
+                            except asyncio.CancelledError:
+                                await pipeline_queue.put(Exception("__STOPPED__"))
+                            except Exception as e:
+                                import sys
+
+                                e.__traceback__ = sys.exc_info()[2]
+                                await pipeline_queue.put(e)
+
+                        new_task = asyncio.create_task(run_resume_task())
+                        app.state.pipeline_tasks[project_path] = new_task
+                except json.JSONDecodeError:
+                    pass
+        except Exception:
+            pass
+
+    app.state.pipeline_interrupts = getattr(app.state, "pipeline_interrupts", {})
+    interrupt_event = asyncio.Event()
+    app.state.pipeline_interrupts[project_path] = interrupt_event
+
+    listen_task = asyncio.create_task(listen_for_approval())
+
+    pipeline_queue = asyncio.Queue()
+
+    async def run_pipeline_task():
+        try:
+            async for message in orchestrator.run_pipeline(vibe):
+                if interrupt_event.is_set():
+                    # We broke out due to interrupt, handled differently
+                    pass
+                await pipeline_queue.put(message)
+            await pipeline_queue.put(None)
+        except asyncio.CancelledError:
+            await pipeline_queue.put(Exception("__STOPPED__"))
+        except Exception as e:
+            import sys
+
+            e.__traceback__ = sys.exc_info()[2]
+            await pipeline_queue.put(e)
+
+    worker_task = asyncio.create_task(run_pipeline_task())
+    app.state.pipeline_tasks[project_path] = worker_task
+
     try:
-        async for message in orchestrator.run_pipeline(vibe):
-            # Send message as JSON to Electron UI
-            await websocket.send_text(message.model_dump_json())
+        import os
+        from core.schema import AgentStatus
+
+        while True:
+            message = await pipeline_queue.get()
+            if message is None:
+                # If task was restarted, make sure we only break if the current task is actually done
+                current_task = app.state.pipeline_tasks.get(project_path)
+                if current_task is None or current_task.done():
+                    break
+                continue
+            if isinstance(message, Exception):
+                e = message
+                if str(e) == "__STOPPED__":
+                    await websocket.send_text(
+                        json.dumps(
+                            {
+                                "agent": "System",
+                                "status": "error",
+                                "thought_process": "Generation was stopped by the user.",
+                                "data_update": {},
+                                "conflicts": [],
+                            }
+                        )
+                    )
+                else:
+                    import traceback
+
+                    error_details = (
+                        "".join(traceback.format_exception(type(e), e, e.__traceback__))
+                        if hasattr(e, "__traceback__")
+                        else traceback.format_exc()
+                    )
+                    await websocket.send_text(
+                        json.dumps(
+                            {
+                                "agent": "System",
+                                "status": "error",
+                                "thought_process": f"Uncaught pipeline exception: {str(e)}",
+                                "data_update": {
+                                    "title": getattr(e, "__class__", type(e)).__name__,
+                                    "traceback": error_details,
+                                },
+                                "conflicts": [str(e)],
+                            }
+                        )
+                    )
+                continue
+            try:
+                msg_str = message.model_dump_json()
+                # Validate JSON integrity
+                json.loads(msg_str)
+                await websocket.send_text(msg_str)
+
+                # Check for Phase Completion
+                if (
+                    message.status == AgentStatus.COMPLETE
+                    and message.agent != "Auditor"
+                ):
+                    auto_accept = os.getenv("AUTO_ACCEPT", "False").lower() == "true"
+                    if not auto_accept and orchestrator.manifest.user_in_the_loop:
+                        await websocket.send_text(
+                            json.dumps(
+                                {
+                                    "agent": message.agent,
+                                    "status": "WAITING_NEXT_PHASE",
+                                    "thought_process": f"Phase {message.agent} Complete. Please review the manifest and click Proceed to Next Step.",
+                                    "data_update": {},
+                                    "conflicts": [],
+                                }
+                            )
+                        )
+                        await next_phase_event.wait()
+                        next_phase_event.clear()
+            except (ValueError, TypeError, json.JSONDecodeError) as e:
+                print(f"[Warning] Dropped malformed message chunk to UI: {e}")
+
+        if not auto_accept:
+            await websocket.send_text(
+                json.dumps(
+                    {
+                        "agent": "System",
+                        "status": "WAITING_APPROVAL",
+                        "thought_process": "Auditor passed. Waiting for User Approval to deploy Brain.",
+                        "data_update": {},
+                        "conflicts": [],
+                    }
+                )
+            )
+            await approval_event.wait()
+
+            await websocket.send_text(
+                json.dumps(
+                    {
+                        "agent": "System",
+                        "status": "writing",
+                        "thought_process": "[SYSTEM] Approval received. Transitioning to COMPLETED and starting Scaffolder...",
+                        "data_update": {},
+                        "conflicts": [],
+                        "raw_stream": "\n\n[SYSTEM] Approval received. Transitioning to COMPLETED and starting Scaffolder...\n",
+                    }
+                )
+            )
+
+        from core.schema import PipelineStatus
+
+        orchestrator.manifest.status = PipelineStatus.COMPLETED
+        orchestrator.state_manager.persist(orchestrator.manifest)
+
+        # Once approved, perform generating
+        orchestrator.generate()
+
+        await websocket.send_text(
+            json.dumps(
+                {
+                    "agent": "System",
+                    "status": "IDE_MODE",
+                    "thought_process": "Brain Scaffold Complete. Entering Vibe Coding IDE Mode.",
+                    "data_update": {},
+                    "conflicts": [],
+                }
+            )
+        )
+
     except Exception as e:
-        await websocket.send_text(json.dumps({"error": str(e)}))
+        import traceback
+
+        error_details = traceback.format_exc()
+        try:
+            await websocket.send_text(
+                json.dumps(
+                    {
+                        "agent": "System",
+                        "status": "error",
+                        "thought_process": f"Connection/system error: {str(e)}",
+                        "data_update": {
+                            "title": getattr(e, "__class__", type(e)).__name__,
+                            "traceback": error_details,
+                        },
+                        "conflicts": [str(e)],
+                    }
+                )
+            )
+        except Exception:
+            pass
+    finally:
+        listen_task.cancel()
+        worker_task.cancel()
+        app.state.pipeline_interrupts.pop(project_path, None)
+        app.state.pipeline_tasks.pop(project_path, None)
+        await websocket.close()
+
+
+@app.websocket("/chat")
+async def chat_websocket(websocket: WebSocket, project_path: str):
+    await websocket.accept()
+    state_manager = StateManager(project_path)
+    manifest = state_manager.load_latest() or Manifest(project_name="Vibe Coding")
+
+    agent = ChatAgent(project_path, manifest)
+
+    try:
+        while True:
+            data = await websocket.receive_text()
+            payload = json.loads(data)
+            user_message = payload.get("message")
+
+            if not user_message:
+                continue
+
+            # Stream thoughts
+            full_response = ""
+            async for chunk in agent.handle_message(user_message):
+                full_response += chunk
+                await websocket.send_text(
+                    json.dumps({"type": "chunk", "content": chunk})
+                )
+
+            # Now parse and send edits
+            try:
+                # Sometimes LLMs wrap JSON in markdown code blocks
+                if full_response.strip().startswith("```"):
+                    parts = full_response.split("```")
+                    if len(parts) >= 3:
+                        full_response = parts[1]
+                        if full_response.startswith("json"):
+                            full_response = full_response[4:]
+
+                parsed = json.loads(full_response)
+
+                if "manifest_updates" in parsed and parsed["manifest_updates"]:
+                    manifest_dict = manifest.model_dump()
+                    # Perform a deep merge or simply update top level
+                    for k, v in parsed["manifest_updates"].items():
+                        manifest_dict[k] = v
+                    try:
+                        manifest = Manifest(**manifest_dict)
+                        # Also attach the direct user message so the pipeline loop sees it if it is running
+                        manifest.user_feedback = user_message
+                        state_manager.persist(manifest)
+
+                        # Trigger interrupt to reload phase if not completed
+                        if manifest.status not in [
+                            "COMPLETED",
+                            "IDE_MODE",
+                            "WAITING_APPROVAL",
+                        ]:
+                            intr = getattr(app.state, "pipeline_interrupts", {}).get(
+                                project_path
+                            )
+                            if intr:
+                                intr.set()
+                    except Exception as me:
+                        print("Failed to apply manifest_update:", me)
+
+                await websocket.send_text(
+                    json.dumps({"type": "edits", "payload": parsed})
+                )
+            except json.JSONDecodeError as e:
+                await websocket.send_text(
+                    json.dumps(
+                        {
+                            "type": "error",
+                            "content": f"Failed to parse agent response as JSON. It answered: {full_response}",
+                        }
+                    )
+                )
+
+    except Exception as e:
+        print(f"Chat WS closed: {e}")
     finally:
         await websocket.close()
 
 
 # For local testing without WebSocket
-@app.get("/stream")
 async def stream_pipeline(project_path: str, vibe: str):
     orchestrator = Orchestrator(project_path)
 

@@ -15,15 +15,34 @@ class BaseAgent(abc.ABC):
         self.manifest = manifest
         self._buffer = ""
         self._is_streaming = False
-        self.provider_manager = ProviderManager()
+
+        provider = "cerebras"
+        if (
+            manifest.instructional_brain
+            and manifest.instructional_brain.provider_config
+        ):
+            provider = manifest.instructional_brain.provider_config.get(
+                "selected_provider", "cerebras"
+            )
+
+        self.provider_manager = ProviderManager(primary_provider=provider)
         self.system_prompt = "You are a professional software architect agent."
 
     async def _call_provider(
         self, prompt: str
     ) -> AsyncGenerator[tuple[str, str], None]:
         """Call provider via ProviderManager."""
+        model = None
+        if (
+            self.manifest.instructional_brain
+            and self.manifest.instructional_brain.provider_config
+        ):
+            model = self.manifest.instructional_brain.provider_config.get(
+                "selected_model"
+            )
+
         async for chunk, provider in self.provider_manager.stream_chat(
-            prompt, self.system_prompt
+            prompt, self.system_prompt, model=model
         ):
             yield chunk, provider
 
@@ -98,7 +117,7 @@ class BaseAgent(abc.ABC):
                     pass
 
     def _parse_buffer(self, buffer: str) -> Dict[str, Any]:
-        """Extracts JSON from the buffer."""
+        """Extracts JSON from the buffer with aggressive fallback recovery logic."""
         cleaned_buffer = buffer.strip()
         if cleaned_buffer.startswith("```json"):
             cleaned_buffer = cleaned_buffer[7:]
@@ -107,16 +126,37 @@ class BaseAgent(abc.ABC):
         if cleaned_buffer.endswith("```"):
             cleaned_buffer = cleaned_buffer[:-3]
 
+        cleaned_buffer = cleaned_buffer.strip()
+
         try:
+            # Attempt direct match first
             start = cleaned_buffer.find("{")
             end = cleaned_buffer.rfind("}") + 1
             if start != -1 and end != -1:
                 return json.loads(cleaned_buffer[start:end])
             return json.loads(cleaned_buffer)
         except json.JSONDecodeError as e:
-            raise AgentValidationError(
-                f"Failed to parse JSON from agent stream: {str(e)}"
-            )
+            # Fallback 1: Broad regex to extract anything resembling a JSON object
+            match = re.search(r"\{.*\}", cleaned_buffer, re.DOTALL)
+            if match:
+                try:
+                    return json.loads(match.group(0))
+                except json.JSONDecodeError:
+                    pass
+
+            # Fallback 2: Basic cleanup for common missing quotes or trailing commas
+            # Remove trailing commas
+            fixed = re.sub(r",\s*([}\]])", r"\1", cleaned_buffer)
+            try:
+                start = fixed.find("{")
+                end = fixed.rfind("}") + 1
+                if start != -1 and end != -1:
+                    return json.loads(fixed[start:end])
+                return json.loads(fixed)
+            except json.JSONDecodeError as nested_e:
+                raise AgentValidationError(
+                    f"Failed to parse JSON from agent stream even with recovery logic: {str(nested_e)}\nRaw Response: {buffer[:100]}..."
+                )
 
     def _validate_update(self, data: Dict[str, Any]):
         """Placeholder for Pydantic-based section validation."""

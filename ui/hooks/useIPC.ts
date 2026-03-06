@@ -3,7 +3,7 @@ import { useStore } from "../store";
 import { AgentMessage } from "../types/electron";
 
 export const useIPC = () => {
-    const { setAgentStatus, setBackendStatus, updateManifest } = useStore();
+    const { setAgentStatus, setBackendStatus, updateManifest, addException } = useStore();
     const heartbeatInterval = useRef<NodeJS.Timeout>();
 
     useEffect(() => {
@@ -13,9 +13,14 @@ export const useIPC = () => {
         });
 
         // Listen for agent state updates
-        const removeAgentListener = window.electronAPI.onAgentUpdate((data: AgentMessage) => {
-            setAgentStatus(data);
-            if (data.manifest) updateManifest(data.manifest);
+        const removeAgentListener = window.electronAPI.onAgentUpdate((data: any) => {
+            if (data.status === "error" && data.data_update?.traceback) {
+                addException(data.data_update.title || "Exception Caught", data.data_update.traceback);
+            }
+            if (data.status === "error" || data.agent) {
+                setAgentStatus(data as AgentMessage);
+                if (data.manifest) updateManifest(data.manifest);
+            }
         });
 
         // Setup Heartbeat Emission
@@ -28,10 +33,11 @@ export const useIPC = () => {
             removeAgentListener();
             if (heartbeatInterval.current) clearInterval(heartbeatInterval.current);
         };
-    }, [setAgentStatus, setBackendStatus, updateManifest]);
+    }, [setAgentStatus, setBackendStatus, updateManifest, addException]);
 
     return {
         selectFolder: window.electronAPI.selectFolder,
         startAgentLoop: window.electronAPI.startAgentLoop,
+        retryPipeline: window.electronAPI.retryPipeline,
     };
 };

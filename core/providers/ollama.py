@@ -2,7 +2,7 @@ import json
 import httpx
 import os
 import ssl
-from typing import AsyncGenerator, Optional
+from typing import AsyncGenerator, Optional, List
 from core.exceptions import ProviderTimeout
 
 
@@ -19,12 +19,31 @@ class OllamaProvider:
             or os.getenv("http_proxy")
         )
 
+    async def list_models(self) -> List[str]:
+        """Fetch available models from Ollama."""
+        try:
+            url = self.base_url.replace("/api/chat", "/api/tags")
+            verify_ssl = not self.dev_mode
+            async with httpx.AsyncClient(
+                timeout=10.0, verify=verify_ssl, proxy=self.proxy
+            ) as client:
+                response = await client.get(url)
+                if response.status_code == 200:
+                    data = response.json()
+                    return [model.get("name") for model in data.get("models", [])]
+        except Exception:
+            pass
+        return [self.model]
+
     async def stream_chat(
-        self, prompt: str, system_prompt: str
+        self, prompt: str, system_prompt: str, model: Optional[str] = None
     ) -> AsyncGenerator[str, None]:
         """
         Local fallback streaming call to Ollama.
         """
+        if model:
+            self.model = model
+
         payload = {
             "model": self.model,
             "messages": [
@@ -75,5 +94,7 @@ class OllamaProvider:
             raise ProviderTimeout(
                 f"Ollama server not found or connection blocked: {str(e)}. Ensure Ollama is running."
             )
+        except ProviderTimeout:
+            raise
         except Exception as e:
             raise ProviderTimeout(f"Ollama connection failed: {str(e)}")

@@ -9,11 +9,11 @@ interface StepProps {
 }
 
 const steps: StepProps[] = [
-    { id: "VISIONARY", label: "Visionary", status: "pending" },
-    { id: "ARCHITECT", label: "Architect", status: "pending" },
-    { id: "ENGINEER", label: "Engineer", status: "pending" },
-    { id: "EXPERT", label: "Expert", status: "pending" },
-    { id: "AUDITOR", label: "Auditor", status: "pending" },
+    { id: "VISIONARY_ACTIVE", label: "Visionary", status: "pending" },
+    { id: "ARCHITECT_ACTIVE", label: "Architect", status: "pending" },
+    { id: "ENGINEER_ACTIVE", label: "Engineer", status: "pending" },
+    { id: "EXPERT_ACTIVE", label: "Expert", status: "pending" },
+    { id: "AUDITOR_ACTIVE", label: "Auditor", status: "pending" },
 ];
 
 const PipelineStepper: React.FC<{ currentId: string | null; status: string }> = ({ currentId, status }) => {

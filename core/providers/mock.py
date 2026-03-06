@@ -72,14 +72,35 @@ class MockProvider:
             }
         elif "antigravity expert" in system_prompt_lower:
             output = {
+                "gemini_md": "# Project Vision\n\nThis is a mocked blueprint document.",
+                "context_md": "Mock context description.",
+                "metadata_json": {"version": "1.0", "mock": True},
                 "rules": [
-                    "Always handle offline gracefully.",
-                    "Always provide clear fallback instructions.",
+                    {
+                        "filename": "offline_rule.md",
+                        "content": "Always handle offline gracefully.",
+                        "description": "Offline handling",
+                    }
                 ],
-                "skills": ["mock_skill.py"],
-                "templates": {
-                    "mock_skill.py": "def mock_run():\n    return 'Mock executed in offline mode'"
-                },
+                "workflows": [
+                    {
+                        "filename": "build_mock.md",
+                        "content": "1. Build mock.",
+                        "success_criteria": ["Mock built"],
+                    }
+                ],
+                "docs": [
+                    {
+                        "filename": "api_mock.md",
+                        "content": "# API Mock\nMock API endpoints.",
+                    }
+                ],
+                "skills": [
+                    {
+                        "filename": "mock_skill.py",
+                        "content": "def mock_run():\n    return 'Mock executed in offline mode'",
+                    }
+                ],
             }
         elif "auditor" in system_prompt_lower:
             output = {

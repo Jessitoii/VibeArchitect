@@ -13,6 +13,7 @@ class PipelineStatus(str, Enum):
     EXPERT_ACTIVE = "EXPERT_ACTIVE"
     AUDITOR_ACTIVE = "AUDITOR_ACTIVE"
     COMPLETED = "COMPLETED"
+    IDE_MODE = "IDE_MODE"
     ERROR = "ERROR"
 
 
@@ -22,6 +23,10 @@ class AgentStatus(str, Enum):
     VALIDATING = "validating"
     COMPLETE = "complete"
     COMMITTED = "COMMITTED"
+    WAITING_APPROVAL = "WAITING_APPROVAL"
+    WAITING_NEXT_PHASE = "WAITING_NEXT_PHASE"
+    ERROR = "error"
+    PAUSED = "paused"
 
 
 class ProductScope(BaseModel):
@@ -90,6 +95,7 @@ class InstructionalBrain(BaseModel):
     workflows: List[AgentWorkflow] = Field(default_factory=list)
     docs: List[AgentFile] = Field(default_factory=list)
     skills: List[AgentFile] = Field(default_factory=list)
+    provider_config: Dict[str, str] = Field(default_factory=dict)
 
 
 class AuditEntry(BaseModel):
@@ -103,6 +109,8 @@ class Manifest(BaseModel):
     version: str = "1.0.0"
     project_name: str
     status: PipelineStatus = PipelineStatus.IDLE
+    user_in_the_loop: bool = True
+    auto_accept: bool = False
     product_scope: Optional[ProductScope] = None
     ui_map: Optional[UIMap] = None
     tech_specs: Optional[TechSpecs] = None
@@ -110,6 +118,7 @@ class Manifest(BaseModel):
     audit_log: List[AuditEntry] = Field(default_factory=list)
     last_updated: datetime = Field(default_factory=datetime.now)
     current_agent: Optional[str] = None
+    user_feedback: Optional[str] = None
 
 
 class AgentMessage(BaseModel):
