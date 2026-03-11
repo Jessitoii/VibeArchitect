@@ -138,8 +138,7 @@ const ManifestEditor: React.FC = () => {
                         automaticLayout: true,
                         glyphMargin: false,
                         folding: true,
-                        lineNumbersMinChars: 3,
-                        backgroundColor: "#0f1115"
+                        lineNumbersMinChars: 3
                     }}
                 />
             </div>

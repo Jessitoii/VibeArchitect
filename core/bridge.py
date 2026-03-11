@@ -81,18 +81,27 @@ async def pipeline_websocket(websocket: WebSocket, project_path: str, vibe: str)
     pipeline_queue = asyncio.Queue()
 
     async def run_pipeline_task():
+        current_agent_name = "System"
         try:
             async for message in orchestrator.run_pipeline(vibe):
+                if hasattr(message, "agent"):
+                    current_agent_name = message.agent
                 if interrupt_event.is_set():
-                    # We broke out due to interrupt, handled differently
-                    pass
+                    # Stop yielding but finish clean
+                    break
                 await pipeline_queue.put(message)
-            await pipeline_queue.put(None)
+            await pipeline_queue.put(None)  # Signal completion
         except asyncio.CancelledError:
             await pipeline_queue.put(Exception("__STOPPED__"))
         except Exception as e:
             import sys
+            import traceback
 
+            error_msg = f"Pipeline failed during {current_agent_name} phase: {str(e)}"
+            print(f"[CRITICAL] {error_msg}")
+
+            # Put the exception with enhanced context into the queue
+            e.current_agent = current_agent_name
             e.__traceback__ = sys.exc_info()[2]
             await pipeline_queue.put(e)
 
@@ -101,7 +110,12 @@ async def pipeline_websocket(websocket: WebSocket, project_path: str, vibe: str)
 
     try:
         import os
-        from core.schema import AgentStatus
+        from core.schema import AgentStatus, PipelineStatus
+
+        # Load local auto_accept pref
+        auto_accept = os.getenv("AUTO_ACCEPT", "False").lower() == "true" or getattr(
+            orchestrator.manifest, "auto_accept", False
+        )
 
         while True:
             message = await pipeline_queue.get()
@@ -133,17 +147,20 @@ async def pipeline_websocket(websocket: WebSocket, project_path: str, vibe: str)
                         if hasattr(e, "__traceback__")
                         else traceback.format_exc()
                     )
+                    failed_agent = getattr(e, "current_agent", "Unknown")
+
                     await websocket.send_text(
                         json.dumps(
                             {
                                 "agent": "System",
                                 "status": "error",
-                                "thought_process": f"Uncaught pipeline exception: {str(e)}",
+                                "thought_process": f"CRITICAL PIPELINE FAILURE: Phase [{failed_agent}] crashed. Internal error: {str(e)}",
                                 "data_update": {
                                     "title": getattr(e, "__class__", type(e)).__name__,
                                     "traceback": error_details,
+                                    "failed_agent": failed_agent,
                                 },
-                                "conflicts": [str(e)],
+                                "conflicts": [f"Pipeline failed at {failed_agent}"],
                             }
                         )
                     )
@@ -154,42 +171,71 @@ async def pipeline_websocket(websocket: WebSocket, project_path: str, vibe: str)
                 json.loads(msg_str)
                 await websocket.send_text(msg_str)
 
-                # Check for Phase Completion
-                if (
-                    message.status == AgentStatus.COMPLETE
-                    and message.agent != "Auditor"
-                ):
-                    auto_accept = os.getenv("AUTO_ACCEPT", "False").lower() == "true"
-                    if not auto_accept and orchestrator.manifest.user_in_the_loop:
-                        await websocket.send_text(
-                            json.dumps(
-                                {
-                                    "agent": message.agent,
-                                    "status": "WAITING_NEXT_PHASE",
-                                    "thought_process": f"Phase {message.agent} Complete. Please review the manifest and click Proceed to Next Step.",
-                                    "data_update": {},
-                                    "conflicts": [],
-                                }
-                            )
-                        )
-                        await next_phase_event.wait()
+                # Signal Filtering: Only show scaffold if Auditor Approved
+                manifest_status = orchestrator.manifest.status
+
+                # Check for Phase Completion - wait for user if auto_accept is False
+                if message.status == AgentStatus.AGENT_FINISHED:
+                    # Refresh auto_accept from disk to pick up user toggles during loop
+                    latest = orchestrator.state_manager.load_latest()
+                    if latest:
+                        orchestrator.manifest = latest
+                        auto_accept = getattr(latest, "auto_accept", auto_accept)
+
+                    if not auto_accept:
+                        # Change status for UI to show "Proceed" button
+                        updated_msg = message.model_dump()
+                        updated_msg["status"] = "WAITING_NEXT_PHASE"
+
+                        # Send updated message and wait
+                        msg_to_send = AgentMessage(**updated_msg)
+                        await websocket.send_text(msg_to_send.model_dump_json())
+
                         next_phase_event.clear()
+                        await next_phase_event.wait()
+
+                        # Reload AGAIN after pause in case they edited manifest during pause
+                        latest = orchestrator.state_manager.load_latest()
+                        if latest:
+                            orchestrator.manifest = latest
+
+                        continue  # Already sent the update, move to next message
+                    else:
+                        # Just pass through to UI as progress
+                        pass
+
+                if message.status == AgentStatus.WAITING_APPROVAL:
+                    if manifest_status != PipelineStatus.AUDITOR_APPROVED:
+                        # Should not happen with new orchestrator logic, but for safety:
+                        message.status = AgentStatus.WRITING
+                    else:
+                        # Success Signal: Inject SHOW_SCAFFOLD_BUTTON
+                        updated_msg = message.model_dump()
+                        updated_msg["data_update"]["SHOW_SCAFFOLD_BUTTON"] = True
+                        msg_to_send = AgentMessage(**updated_msg)
+                        await websocket.send_text(msg_to_send.model_dump_json())
+                        continue  # Already sent
+            except (NameError, AttributeError) as e:
+                # Requirement: Log clearly to AGENT LOGS (UI) instead of crashing
+                await websocket.send_text(
+                    json.dumps(
+                        {
+                            "agent": "System",
+                            "status": "error",
+                            "thought_process": f"[CRITICAL LOGIC ERROR]: {str(e)}",
+                            "data_update": {"error_type": type(e).__name__},
+                            "conflicts": [str(e)],
+                        }
+                    )
+                )
             except (ValueError, TypeError, json.JSONDecodeError) as e:
                 print(f"[Warning] Dropped malformed message chunk to UI: {e}")
 
-        if not auto_accept:
-            await websocket.send_text(
-                json.dumps(
-                    {
-                        "agent": "System",
-                        "status": "WAITING_APPROVAL",
-                        "thought_process": "Auditor passed. Waiting for User Approval to deploy Brain.",
-                        "data_update": {},
-                        "conflicts": [],
-                    }
-                )
-            )
-            await approval_event.wait()
+        # Only wait for approval and scaffold IF the auditor approved the project
+        if orchestrator.manifest.status == PipelineStatus.AUDITOR_APPROVED:
+            if not auto_accept:
+                # The orchestrator now yields WAITING_APPROVAL, so we just wait for the approval event here
+                await approval_event.wait()
 
             await websocket.send_text(
                 json.dumps(
@@ -204,25 +250,29 @@ async def pipeline_websocket(websocket: WebSocket, project_path: str, vibe: str)
                 )
             )
 
-        from core.schema import PipelineStatus
+            from core.schema import PipelineStatus
 
-        orchestrator.manifest.status = PipelineStatus.COMPLETED
-        orchestrator.state_manager.persist(orchestrator.manifest)
+            orchestrator.manifest.status = PipelineStatus.COMPLETED
+            orchestrator.state_manager.persist(orchestrator.manifest)
 
-        # Once approved, perform generating
-        orchestrator.generate()
+            # Once approved, perform generating
+            orchestrator.generate()
 
-        await websocket.send_text(
-            json.dumps(
-                {
-                    "agent": "System",
-                    "status": "IDE_MODE",
-                    "thought_process": "Brain Scaffold Complete. Entering Vibe Coding IDE Mode.",
-                    "data_update": {},
-                    "conflicts": [],
-                }
+            await websocket.send_text(
+                json.dumps(
+                    {
+                        "agent": "System",
+                        "status": "IDE_MODE",
+                        "thought_process": "Brain Scaffold Complete. Entering Vibe Coding IDE Mode.",
+                        "data_update": {},
+                        "conflicts": [],
+                    }
+                )
             )
-        )
+        else:
+            print(
+                f"[Warning] Pipeline finished with status {orchestrator.manifest.status}. Skipping scaffolding."
+            )
 
     except Exception as e:
         import traceback

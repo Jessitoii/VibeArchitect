@@ -66,6 +66,7 @@ export default function FileExplorer() {
         const brain = manifest?.instructional_brain;
 
         if (brain) {
+            // ── .agent/ virtual node ──────────────────────────────────────
             const hasAgent = entries.some(e => e.name === '.agent' && e.isDirectory);
             if (!hasAgent) {
                 const agentNode: FileNode = { name: '.agent', isDirectory: true, path: `${projectPath}/.agent`, children: [] };
@@ -82,16 +83,79 @@ export default function FileExplorer() {
                     }
                 };
 
-                if (brain.gemini_md) agentNode.children!.push({ name: 'GEMINI.md', isDirectory: false, path: `${agentNode.path}/GEMINI.md` });
-                if (brain.context_md) agentNode.children!.push({ name: 'CONTEXT.md', isDirectory: false, path: `${agentNode.path}/CONTEXT.md` });
-                if (brain.metadata_json) agentNode.children!.push({ name: 'metadata.json', isDirectory: false, path: `${agentNode.path}/metadata.json` });
+                // New schema: AGENT.md + RULES.md + metadata.json
+                if (brain.agent_md) agentNode.children!.push({ name: 'AGENT.md', isDirectory: false, path: `${agentNode.path}/AGENT.md` });
+                if (brain.rules_md) agentNode.children!.push({ name: 'RULES.md', isDirectory: false, path: `${agentNode.path}/RULES.md` });
+                if (brain.metadata_index?.length || brain.metadata_json) agentNode.children!.push({ name: 'metadata.json', isDirectory: false, path: `${agentNode.path}/metadata.json` });
 
-                addVirtualNode('rules', brain.rules);
+                // rules/ folder: auto_*.md + sub_agents/ subdirectory
+                if ((brain.rules && brain.rules.length > 0) || (brain.sub_agent_rules && brain.sub_agent_rules.length > 0)) {
+                    const rulesFolder: FileNode = { name: 'rules', isDirectory: true, path: `${agentNode.path}/rules`, children: [] };
+
+                    // Auto-generated preventative rules
+                    (brain.rules || []).forEach((r: any) => {
+                        if (r.filename) rulesFolder.children!.push({ name: r.filename, isDirectory: false, path: `${rulesFolder.path}/${r.filename}` });
+                    });
+
+                    // Sub-agent domain rulebooks inside rules/sub_agents/
+                    if (brain.sub_agent_rules && brain.sub_agent_rules.length > 0) {
+                        const subAgentsFolder: FileNode = { name: 'sub_agents', isDirectory: true, path: `${rulesFolder.path}/sub_agents`, children: [] };
+                        brain.sub_agent_rules.forEach((sar: any) => {
+                            if (sar.filename) subAgentsFolder.children!.push({ name: sar.filename, isDirectory: false, path: `${subAgentsFolder.path}/${sar.filename}` });
+                        });
+                        rulesFolder.children!.push(subAgentsFolder);
+                    }
+
+                    agentNode.children!.push(rulesFolder);
+                }
                 addVirtualNode('workflows', brain.workflows);
-                addVirtualNode('docs', brain.docs);
-                addVirtualNode('skills', brain.skills);
+                // Skills may be in Claude-style subdirs (skill-name/SKILL.md)
+                if (brain.skills && brain.skills.length > 0) {
+                    const skillsFolder: FileNode = { name: 'skills', isDirectory: true, path: `${agentNode.path}/skills`, children: [] };
+                    const skillDirs: Record<string, FileNode> = {};
+                    brain.skills.forEach((s: any) => {
+                        if (!s.filename) return;
+                        if (s.filename.includes('/')) {
+                            const [dirName, fileName] = s.filename.split('/');
+                            if (!skillDirs[dirName]) {
+                                skillDirs[dirName] = { name: dirName, isDirectory: true, path: `${skillsFolder.path}/${dirName}`, children: [] };
+                                skillsFolder.children!.push(skillDirs[dirName]);
+                            }
+                            skillDirs[dirName].children!.push({ name: fileName, isDirectory: false, path: `${skillsFolder.path}/${s.filename}` });
+                        } else {
+                            skillsFolder.children!.push({ name: s.filename, isDirectory: false, path: `${skillsFolder.path}/${s.filename}` });
+                        }
+                    });
+                    agentNode.children!.push(skillsFolder);
+                }
+                // NOTE: docs go to /docs/ at project root (see below)
 
                 entries = [agentNode, ...entries];
+            }
+
+            // ── /docs/ virtual node at project root ───────────────────────
+            const hasDocs = entries.some(e => e.name === 'docs' && e.isDirectory);
+            if (!hasDocs && brain.docs && brain.docs.length > 0) {
+                const docsRoot: FileNode = { name: 'docs', isDirectory: true, path: `${projectPath}/docs`, children: [] };
+                const subFolders: Record<string, FileNode> = {};
+
+                brain.docs.forEach((doc: any) => {
+                    if (!doc.filename) return;
+                    const parts = doc.filename.split('/');
+                    if (parts.length > 1) {
+                        // e.g. "ui/Dashboard.md" → subfolder "ui"
+                        const sub = parts[0];
+                        if (!subFolders[sub]) {
+                            subFolders[sub] = { name: sub, isDirectory: true, path: `${docsRoot.path}/${sub}`, children: [] };
+                            docsRoot.children!.push(subFolders[sub]);
+                        }
+                        subFolders[sub].children!.push({ name: parts[1], isDirectory: false, path: `${docsRoot.path}/${doc.filename}` });
+                    } else {
+                        docsRoot.children!.push({ name: doc.filename, isDirectory: false, path: `${docsRoot.path}/${doc.filename}` });
+                    }
+                });
+
+                entries = [...entries, docsRoot];
             }
         }
         return entries;
@@ -186,20 +250,43 @@ export default function FileExplorer() {
     const handleSelect = async (path: string) => {
         let content = await window.electronAPI.readFile(path);
 
-        // If file physically doesn't exist yet but is in manifest
-        if (!content && path.includes('.agent')) {
+        // If file physically doesn't exist yet but is in manifest (virtual preview)
+        if (!content && (path.includes('.agent') || path.includes('/docs/'))) {
             const brain = manifest?.instructional_brain;
             if (brain) {
-                if (path.endsWith('GEMINI.md')) content = brain.gemini_md;
-                else if (path.endsWith('CONTEXT.md')) content = brain.context_md;
-                else if (path.endsWith('metadata.json')) content = JSON.stringify(brain.metadata_json, null, 2);
-                else {
+                if (path.endsWith('AGENT.md')) content = brain.agent_md;
+                else if (path.endsWith('RULES.md')) content = brain.rules_md;
+                else if (path.endsWith('metadata.json')) {
+                    // Build metadata.json preview from metadata_index
+                    const idx = brain.metadata_index?.length
+                        ? brain.metadata_index
+                        : brain.metadata_json;
+                    content = JSON.stringify({ schema_version: 2, index: idx }, null, 2);
+                } else {
                     const folderName = path.split('/').slice(-2, -1)[0];
                     const fileName = path.split('/').pop();
-                    if (folderName) {
-                        const list = (brain as any)[folderName] || [];
-                        const found = list.find((f: any) => f.filename === fileName);
+                    // Resolve from skills/rules/workflows subfolder lists
+                    const listSources: Record<string, any[]> = {
+                        rules: brain.rules || [],
+                        workflows: brain.workflows || [],
+                        skills: brain.skills || [],
+                    };
+                    if (folderName && listSources[folderName]) {
+                        const found = listSources[folderName].find((f: any) => f.filename === fileName);
                         if (found) content = found.content;
+                    }
+                    // Sub-agent rulebooks: path ends in rules/sub_agents/{filename}
+                    if (!content && brain.sub_agent_rules && path.includes('sub_agents')) {
+                        const found = brain.sub_agent_rules.find((s: any) => path.endsWith(s.filename));
+                        if (found) content = found.content;
+                    }
+                    // For /docs/ virtual files, resolve by filename (may include sub-path)
+                    if (!content && brain.docs) {
+                        const relativePath = path.includes('/docs/') ? path.split('/docs/').pop() : null;
+                        if (relativePath) {
+                            const found = brain.docs.find((d: any) => d.filename === relativePath);
+                            if (found) content = found.content;
+                        }
                     }
                 }
             }

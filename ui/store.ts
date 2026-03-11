@@ -14,7 +14,7 @@ interface AppState {
     vibePrompt: string;
     currentAgent: string | null;
     currentProvider: string | null;
-    agentStatus: "idle" | "thinking" | "writing" | "validating" | "complete" | "error" | "WAITING_APPROVAL" | "IDE_MODE" | "WAITING_NEXT_PHASE";
+    agentStatus: "idle" | "thinking" | "writing" | "validating" | "complete" | "error" | "WAITING_APPROVAL" | "IDE_MODE" | "WAITING_NEXT_PHASE" | "AGENT_FINISHED";
     isAgentActive: boolean;
     backendStatus: "connected" | "disconnected" | "error";
     manifest: any;
@@ -69,10 +69,20 @@ export const useStore = create<AppState>((set) => ({
         currentAgent: status.agent,
         currentProvider: status.provider || null,
         agentStatus: status.status,
-        isAgentActive: status.status !== "complete" && status.status !== "error" && status.status !== "WAITING_APPROVAL" && status.status !== "IDE_MODE" && status.status !== "WAITING_NEXT_PHASE"
+        isAgentActive: status.status !== "complete" &&
+            status.status !== "error" &&
+            status.status !== "WAITING_APPROVAL" &&
+            status.status !== "IDE_MODE" &&
+            status.status !== "WAITING_NEXT_PHASE" &&
+            status.status !== "AGENT_FINISHED"
     }),
     setBackendStatus: (status: "connected" | "disconnected" | "error") => set({ backendStatus: status }),
-    updateManifest: (manifest: any) => set({ manifest }),
+    updateManifest: (manifest: any) => set((state) => {
+        if (state.projectPath) {
+            window.electronAPI.saveManifest(state.projectPath, manifest);
+        }
+        return { manifest };
+    }),
     addException: (title: string, traceback: string) => set((state) => ({
         exceptions: [...state.exceptions, { id: Math.random().toString(36).substr(2, 9), title, traceback, timestamp: Date.now() }]
     })),

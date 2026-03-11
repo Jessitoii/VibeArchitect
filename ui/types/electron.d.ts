@@ -1,6 +1,6 @@
 export interface AgentMessage {
     agent: string;
-    status: "thinking" | "writing" | "validating" | "complete" | "error" | "WAITING_APPROVAL" | "IDE_MODE" | "WAITING_NEXT_PHASE";
+    status: "thinking" | "writing" | "validating" | "complete" | "error" | "WAITING_APPROVAL" | "IDE_MODE" | "WAITING_NEXT_PHASE" | "AGENT_FINISHED";
     data_update: any;
     thought_process: string;
     conflicts: string[];
@@ -16,6 +16,8 @@ export interface ElectronAPI {
     readFile: (filePath: string) => Promise<string | null>;
     saveFile: (filePath: string, content: string) => Promise<{ success: boolean; error?: string }>;
     deleteFile: (filePath: string) => Promise<{ success: boolean; error?: string }>;
+    getManifest: (projectPath: string) => Promise<any | null>;
+    saveManifest: (projectPath: string, manifest: any) => Promise<{ success: boolean; error?: string }>;
     watchDir: (dirPath: string) => Promise<{ success: boolean; error?: string }>;
     proceedNextPhase: () => void;
     stopGeneration: () => void;

@@ -84,6 +84,31 @@ ipcMain.handle('delete-file', async (event, filePath) => {
     }
 });
 
+ipcMain.handle('save-manifest', async (event, projectPath, manifest) => {
+    try {
+        const manifestPath = path.join(projectPath, '.vibe_architect', 'manifest.json');
+        fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), 'utf-8');
+        return { success: true };
+    } catch (e) {
+        console.error("Failed to save manifest:", e);
+        return { success: false, error: e.message };
+    }
+});
+
+ipcMain.handle('get-manifest', async (event, projectPath) => {
+    try {
+        const manifestPath = path.join(projectPath, '.vibe_architect', 'manifest.json');
+        if (fs.existsSync(manifestPath)) {
+            const content = fs.readFileSync(manifestPath, 'utf-8');
+            return JSON.parse(content);
+        }
+        return null;
+    } catch (e) {
+        console.error("Failed to read manifest:", e);
+        return null;
+    }
+});
+
 let fileWatcher = null;
 ipcMain.handle('watch-dir', (event, dirPath) => {
     if (fileWatcher) fileWatcher.close();

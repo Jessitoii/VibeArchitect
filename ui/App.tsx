@@ -32,6 +32,27 @@ const App: React.FC = () => {
         }
     }, [agentStatus, setCurrentView]);
 
+    // Persistence: Fetch manifest on project load/restart
+    React.useEffect(() => {
+        if (projectPath && window.electronAPI.getManifest) {
+            window.electronAPI.getManifest(projectPath).then(m => {
+                if (m) {
+                    useStore.getState().updateManifest(m);
+                    // If it was already approved, ensure the UI reflects that
+                    if (m.status === "AUDITOR_APPROVED" && agentStatus !== "IDE_MODE") {
+                        useStore.getState().setAgentStatus({
+                            agent: "System",
+                            status: "WAITING_APPROVAL",
+                            thought_process: "Resumed from disk: All agents finished. Ready for final approval.",
+                            data_update: { SHOW_SCAFFOLD_BUTTON: true },
+                            conflicts: []
+                        } as any);
+                    }
+                }
+            });
+        }
+    }, [projectPath]);
+
     const handleSelectFolder = async () => {
         const path = await selectFolder();
         if (path) setProjectPath(path);
@@ -309,7 +330,7 @@ const App: React.FC = () => {
 
                 {/* Human-in-the-Loop Overlay */}
                 <AnimatePresence>
-                    {agentStatus === "WAITING_APPROVAL" && (
+                    {agentStatus === "WAITING_APPROVAL" && manifest?.status === "AUDITOR_APPROVED" && (
                         <ReviewAndDeploy
                             onApprove={() => {
                                 window.electronAPI.approveDeployment();

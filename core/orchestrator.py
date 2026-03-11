@@ -40,17 +40,27 @@ class Orchestrator:
         if latest_manifest:
             self.manifest = latest_manifest
 
-        start_index = 0
-        if not getattr(self.manifest, "product_scope", None):
+        # Resume logic: Prioritize content presence to avoid re-running finished phases
+        if self.manifest.status in [
+            PipelineStatus.AUDITOR_APPROVED,
+            PipelineStatus.COMPLETED,
+        ]:
+            start_index = 4
+        elif not getattr(self.manifest, "product_scope", None):
             start_index = 0
+            self.manifest.status = PipelineStatus.VISIONARY_ACTIVE
         elif not getattr(self.manifest, "ui_map", None):
             start_index = 1
+            self.manifest.status = PipelineStatus.ARCHITECT_ACTIVE
         elif not getattr(self.manifest, "tech_specs", None):
             start_index = 2
+            self.manifest.status = PipelineStatus.ENGINEER_ACTIVE
         elif not getattr(self.manifest, "instructional_brain", None):
             start_index = 3
+            self.manifest.status = PipelineStatus.EXPERT_ACTIVE
         else:
             start_index = 4
+            self.manifest.status = PipelineStatus.AUDITOR_ACTIVE
 
         async for msg in self._run_pipeline_from(vibe, start_index):
             yield msg
@@ -72,73 +82,111 @@ class Orchestrator:
                     self.manifest = latest_manifest
 
                 self.manifest.status = state
-                agent = self.agents[state]
-                agent.manifest = self.manifest
+                self.manifest.current_agent = state.name  # UI metadata
 
-                # 1. Take in-memory snapshot before agent starts
-                self.state_manager.save_snapshot(
-                    self.manifest, tag=f"pre_{agent.name.lower()}"
-                )
+                try:
+                    agent = self.agents[state]
+                    agent.manifest = self.manifest
 
-                feedback_loop = True
-                while feedback_loop:
-                    feedback_loop = False
-                    try:
-                        # 2. Execute agent
-                        prompt = agent.get_prompt(vibe)
+                    # 1. Take in-memory snapshot before agent starts
+                    self.state_manager.save_snapshot(
+                        self.manifest, tag=f"pre_{agent.name.lower()}"
+                    )
 
-                        latest = self.state_manager.load_latest()
-                        if latest and latest.user_feedback:
-                            prompt += f"\n\n[USER FEEDBACK/INTERRUPT]: {latest.user_feedback}\nAdjust your output accordingly."
-                            latest.user_feedback = None
-                            self.manifest.user_feedback = None
-                            self.state_manager.persist(latest)
+                    feedback_loop = True
+                    while feedback_loop:
+                        feedback_loop = False
+                        try:
+                            # 2. Execute agent
+                            prompt = agent.get_prompt(vibe)
 
-                        async for message in agent.execute(prompt):
-                            if message.status == AgentStatus.COMPLETE:
-                                # 3. Update manifest section
-                                self._update_manifest_section(
-                                    state, message.data_update
+                            latest = self.state_manager.load_latest()
+                            if latest and latest.user_feedback:
+                                prompt += f"\n\n[USER FEEDBACK/INTERRUPT]: {latest.user_feedback}\nAdjust your output accordingly."
+                                latest.user_feedback = None
+                                self.manifest.user_feedback = None
+                                self.state_manager.persist(latest)
+
+                            async for message in agent.execute(prompt):
+                                if message.status == AgentStatus.COMPLETE:
+                                    # 3. Update manifest section
+                                    self._update_manifest_section(
+                                        state, message.data_update
+                                    )
+                                    # Differentiate between Agent Complete and Global Waiting
+                                    message.status = AgentStatus.AGENT_FINISHED
+                                    # Fix: Ensure manifest is JSON serializable (handles datetimes)
+                                    message.manifest = json.loads(
+                                        self.manifest.model_dump_json()
+                                    )
+
+                                yield message
+
+                            # Check if new feedback arrived DURING streaming
+                            latest = self.state_manager.load_latest()
+                            if latest and latest.user_feedback:
+                                # Re-run this specific phase with the new feedback!
+                                feedback_loop = True
+                                yield AgentMessage(
+                                    agent="System",
+                                    status=AgentStatus.THINKING,
+                                    thought_process="User feedback detected during phase stream. Restarting current phase with new feedback...",
+                                    conflicts=[],
                                 )
-                                message.manifest = self.manifest.model_dump()
-                            yield message
+                                continue
 
-                        # Check if new feedback arrived DURING streaming
-                        latest = self.state_manager.load_latest()
-                        if latest and latest.user_feedback:
-                            # Re-run this specific phase with the new feedback!
-                            feedback_loop = True
+                            # 4. Save successful state and persist at critical milestone
+                            self.state_manager.save_snapshot(
+                                self.manifest, tag=f"post_{agent.name.lower()}"
+                            )
+                            self.state_manager.persist(self.manifest)
+
+                        except AgentValidationError as e:
+                            # 5. Automatic Rollback on failure using in-memory stack
+                            print(f"Agent {agent.name} failed. Initiating rollback...")
+                            self.manifest = self.state_manager.rollback()
+                            self.manifest.status = PipelineStatus.ERROR
+                            self.state_manager.persist(self.manifest)
                             yield AgentMessage(
                                 agent="System",
-                                status=AgentStatus.THINKING,
-                                thought_process="User feedback detected during phase stream. Restarting current phase with new feedback...",
-                                conflicts=[],
+                                status=AgentStatus.ERROR,
+                                thought_process=f"Error: {str(e)}. Rolled back to previous state.",
+                                conflicts=[str(e)],
                             )
-                            continue
+                            return
+                except Exception as e:
+                    # Handover/Initialization Error
+                    yield AgentMessage(
+                        agent="System",
+                        status=AgentStatus.ERROR,
+                        thought_process=f"CRITICAL HANDOVER ERROR on {state}: {str(e)}",
+                        conflicts=[str(e)],
+                    )
+                    return
 
-                        # 4. Save successful state and persist at critical milestone
-                        self.state_manager.save_snapshot(
-                            self.manifest, tag=f"post_{agent.name.lower()}"
-                        )
-                        self.state_manager.persist(self.manifest)
+            # After all 5 agents have finished:
+            # Set AUDITOR_APPROVED — pipeline is done but NOT yet COMPLETED.
+            if self.manifest.status == PipelineStatus.AUDITOR_ACTIVE:
+                self.manifest.status = PipelineStatus.AUDITOR_APPROVED
+                self.state_manager.persist(self.manifest)
 
-                    except AgentValidationError as e:
-                        # 5. Automatic Rollback on failure using in-memory stack
-                        print(f"Agent {agent.name} failed. Initiating rollback...")
-                        self.manifest = self.state_manager.rollback()
-                        self.manifest.status = PipelineStatus.ERROR
-                        self.state_manager.persist(self.manifest)
-                        yield AgentMessage(
-                            agent="System",
-                            status=AgentStatus.ERROR,
-                            thought_process=f"Error: {str(e)}. Rolled back to previous state.",
-                            conflicts=[str(e)],
-                        )
-                        return
-
-            self.manifest.status = PipelineStatus.COMPLETED
-            # Final persistence on pipeline completion
-            self.state_manager.persist(self.manifest)
+                # Global Status Guard: Only yield WAITING_APPROVAL after Auditor success
+                yield AgentMessage(
+                    agent="System",
+                    status=AgentStatus.WAITING_APPROVAL,
+                    thought_process="Auditor verification complete. All technical checks passed. Ready for deployment.",
+                    data_update={},
+                    conflicts=[],
+                    manifest=self.manifest.model_dump(),
+                )
+            else:
+                # Loop ended prematurely
+                yield AgentMessage(
+                    agent="System",
+                    status=AgentStatus.ERROR,
+                    thought_process="CRITICAL_PIPELINE_INCOMPLETE: The loop terminated before the Auditor could finish.",
+                    conflicts=["Pipeline Loop Failure"],
+                )
         except asyncio.CancelledError:
             print("[Warning] Pipeline task was cancelled by user. Resetting to IDLE.")
             self.manifest.status = PipelineStatus.IDLE

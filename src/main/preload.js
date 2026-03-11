@@ -7,6 +7,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     readFile: (filePath) => ipcRenderer.invoke('read-file', filePath),
     saveFile: (filePath, content) => ipcRenderer.invoke('save-file', filePath, content),
     deleteFile: (filePath) => ipcRenderer.invoke('delete-file', filePath),
+    getManifest: (projectPath) => ipcRenderer.invoke('get-manifest', projectPath),
+    saveManifest: (projectPath, manifest) => ipcRenderer.invoke('save-manifest', projectPath, manifest),
     watchDir: (dirPath) => ipcRenderer.invoke('watch-dir', dirPath),
     proceedNextPhase: () => ipcRenderer.send('next-phase'),
     stopGeneration: () => ipcRenderer.send('stop-generation'),
