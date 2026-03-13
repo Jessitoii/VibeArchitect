@@ -36,6 +36,11 @@ class Orchestrator:
 
     async def resume_pipeline(self, vibe: str) -> AsyncGenerator[AgentMessage, None]:
         """Resumes the pipeline from the last uncompleted phase by checking manifest state."""
+        print(f"[DEBUG] resume_pipeline called with vibe: {vibe[:30]}")
+        latest = self.state_manager.load_latest()
+        print(f"[DEBUG] load_latest result: {latest}")
+        print(f"[DEBUG] current manifest status: {self.manifest.status}")
+        print(f"[DEBUG] product_scope exists: {bool(self.manifest.product_scope)}")
         latest_manifest = self.state_manager.load_latest()
         if latest_manifest:
             self.manifest = latest_manifest
@@ -143,7 +148,9 @@ class Orchestrator:
 
                         except AgentValidationError as e:
                             # 5. Automatic Rollback on failure using in-memory stack
-                            print(f"Agent {agent.name} failed. Initiating rollback...")
+                            print(
+                                f"Agent {agent.name} failed. Initiating rollback... Error: {str(e)} | Type: {type(e).__name__}"
+                            )
                             self.manifest = self.state_manager.rollback()
                             self.manifest.status = PipelineStatus.ERROR
                             self.state_manager.persist(self.manifest)
@@ -166,6 +173,13 @@ class Orchestrator:
 
             # After all 5 agents have finished:
             # Set AUDITOR_APPROVED — pipeline is done but NOT yet COMPLETED.
+            print(f"[DEBUG] Loop ended. Final status: {self.manifest.status}")
+            print(f"[DEBUG] product_scope: {bool(self.manifest.product_scope)}")
+            print(f"[DEBUG] ui_map: {bool(self.manifest.ui_map)}")
+            print(f"[DEBUG] tech_specs: {bool(self.manifest.tech_specs)}")
+            print(
+                f"[DEBUG] instructional_brain: {bool(self.manifest.instructional_brain)}"
+            )
             if self.manifest.status == PipelineStatus.AUDITOR_ACTIVE:
                 self.manifest.status = PipelineStatus.AUDITOR_APPROVED
                 self.state_manager.persist(self.manifest)
@@ -211,6 +225,15 @@ class Orchestrator:
         elif status == PipelineStatus.ENGINEER_ACTIVE:
             from core.schema import TechSpecs
 
+            routes = data.get("api_routes", [])
+            for i, route in enumerate(routes):
+                if not route.get("id"):
+                    method = route.get("method", "GET").upper()
+                    path = route.get("path", f"/unknown/{i}")
+                    route["id"] = (
+                        f"{method}_{path.replace('/', '_').upper().strip('_')}"
+                    )
+            data["api_routes"] = routes
             self.manifest.tech_specs = TechSpecs(**data)
         elif status == PipelineStatus.EXPERT_ACTIVE:
             from core.schema import InstructionalBrain

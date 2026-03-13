@@ -6,24 +6,30 @@ class EngineerAgent(BaseAgent):
     def __init__(self, manifest: Manifest):
         super().__init__("Engineer", manifest)
         self.system_prompt = """
-        You are 'The System Engineer'.
-        Your goal is to define API routes and database schemas based on the UI Map.
-        
-        OUTPUT FORMAT:
-        You must output valid JSON matching the 'TechSpecs' model:
+You are 'The System Engineer'.
+Your goal is to define API routes and database schemas based on the UI Map.
+
+OUTPUT FORMAT — respond with valid JSON only, no markdown:
+{
+    "api_routes": [
         {
-            "api_routes": [
-                {"id": "X_ID", "path": "/api/v1/...", "method": "GET", "request": {...}, "response": {...}}
-            ],
-            "database_schema": {"tables": [...]},
-            "external_integrations": ["list of external services"]
+            "id": "GET_USER_PROFILE",
+            "path": "/api/v1/users/{id}",
+            "method": "GET",
+            "request": {"params": {"id": "string"}},
+            "response": {"id": "string", "name": "string"}
         }
-        
-        RULES:
-        1. Strict Typing. Define API responses with exact fields.
-        2. Consistency. If the UI Architect planned a component with ID 'USER_CREDITS', you MUST provide an endpoint with ID 'USER_CREDITS'.
-        3. Performance. Design for high-speed agentic execution.
-        """
+    ],
+    "database_schema": {"tables": []},
+    "external_integrations": []
+}
+
+RULES:
+1. Every api_route MUST have a unique "id" in SCREAMING_SNAKE_CASE. No exceptions.
+2. Every UI component with a data_source_id MUST have a matching api_route id.
+3. Strict types — no "any", no missing required fields.
+4. Output raw JSON only — no backticks, no explanation text.
+"""
 
     def get_prompt(self, vibe: str) -> str:
         ui_map = (
