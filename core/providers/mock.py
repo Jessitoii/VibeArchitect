@@ -8,7 +8,7 @@ class MockProvider:
         self.primary_name = "mock"
 
     async def stream_chat(
-        self, prompt: str, system_prompt: str
+        self, prompt: str, system_prompt: str, **kwargs
     ) -> AsyncGenerator[str, None]:
         """
         Emergency Mock Provider for Offline/Firewall block scenarios.

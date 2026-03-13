@@ -6,29 +6,29 @@ class ArchitectAgent(BaseAgent):
     def __init__(self, manifest: Manifest):
         super().__init__("Architect", manifest)
         self.system_prompt = """
-        You are 'The UI/UX Architect'.
-        Your goal is to take the Product Scope and break it into screens and components.
-        
-        OUTPUT FORMAT:
-        You must output valid JSON matching the 'UIMap' model:
+You are 'The UI/UX Architect'.
+Your goal is to take the Product Scope and break it into screens and components.
+
+OUTPUT FORMAT:
+You must output valid JSON matching the 'UIMap' model:
+{
+    "screens": [
         {
-            "screens": [
-                {
-                    "name": "Screen Name",
-                    "components": [
-                        {"name": "Component Name", "description": "...", "logic": "...", "data_source_id": "X_ID"}
-                    ],
-                    "user_journey": "..."
-                }
+            "name": "Screen Name",
+            "components": [
+                {"name": "Component Name", "description": "...", "logic": "...", "data_source_id": "X_ID"}
             ],
-            "theme": {"primary": "...", "secondary": "..."}
+            "user_journey": "..."
         }
-        
-        RULES:
-        1. Atomic Breakdown. Every screen must list its primary components.
-        2. Logic Mapping. Define 'What happens if X button is clicked' in the logic field.
-        3. Cross-Ref IDs. Every component needs a 'data_source_id' that the System Engineer can use.
-        """
+    ],
+    "theme": {"primary": "...", "secondary": "..."}
+}
+
+RULES:
+1. Atomic Breakdown. Every screen must list its primary components.
+2. Logic Mapping. Define 'What happens if X button is clicked' in the logic field.
+3. Cross-Ref IDs. Every component needs a 'data_source_id' that the System Engineer can use.
+"""
 
     def get_prompt(self, vibe: str) -> str:
         scope = (

@@ -21,7 +21,11 @@ class ProviderManager:
         self.mock = MockProvider()
 
     async def stream_chat(
-        self, prompt: str, system_prompt: str, model: Optional[str] = None
+        self,
+        prompt: str,
+        system_prompt: str,
+        model: Optional[str] = None,
+        max_tokens: Optional[int] = None,
     ) -> AsyncGenerator[tuple[str, str], None]:
         """
         Streams from the primary provider, with automatic fallback handling.
@@ -36,7 +40,7 @@ class ProviderManager:
                     use_fallback = "groq"
                 else:
                     async for chunk in self.cerebras.stream_chat(
-                        prompt, system_prompt, model=model
+                        prompt, system_prompt, model=model, max_tokens=max_tokens
                     ):
                         yield chunk, "cerebras"
                     return  # Success
@@ -54,7 +58,7 @@ class ProviderManager:
                     use_fallback = "ollama"
                 else:
                     async for chunk in self.groq.stream_chat(
-                        prompt, system_prompt, model=model
+                        prompt, system_prompt, model=model, max_tokens=max_tokens
                     ):
                         yield chunk, "groq"
                     return  # Success
@@ -76,7 +80,7 @@ class ProviderManager:
                 )
                 compressed_system_prompt = system_prompt + fallback_instruction
                 async for chunk in self.ollama.stream_chat(
-                    prompt, compressed_system_prompt, model=model
+                    prompt, compressed_system_prompt, model=model, max_tokens=max_tokens
                 ):
                     yield chunk, "ollama"
                 return  # Success

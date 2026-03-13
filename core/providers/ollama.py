@@ -36,7 +36,11 @@ class OllamaProvider:
         return [self.model]
 
     async def stream_chat(
-        self, prompt: str, system_prompt: str, model: Optional[str] = None
+        self,
+        prompt: str,
+        system_prompt: str,
+        model: Optional[str] = None,
+        max_tokens: Optional[int] = None,
     ) -> AsyncGenerator[str, None]:
         """
         Local fallback streaming call to Ollama.
@@ -53,6 +57,8 @@ class OllamaProvider:
             "stream": True,
             "options": {"temperature": 0.2},
         }
+
+        payload["options"]["num_predict"] = max_tokens or 8192
 
         try:
             verify_ssl = not self.dev_mode

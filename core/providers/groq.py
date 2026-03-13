@@ -25,7 +25,11 @@ class GroqProvider:
         )
 
     async def stream_chat(
-        self, prompt: str, system_prompt: str, model: Optional[str] = None
+        self,
+        prompt: str,
+        system_prompt: str,
+        model: Optional[str] = None,
+        max_tokens: Optional[int] = None,
     ) -> AsyncGenerator[str, None]:
         """
         Async streaming call to GroqCloud API.
@@ -46,6 +50,7 @@ class GroqProvider:
             ],
             "stream": True,
             "temperature": 0.2,
+            "max_tokens": max_tokens or 8192,
         }
 
         try:

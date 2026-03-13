@@ -42,7 +42,7 @@ class BaseAgent(abc.ABC):
             )
 
         async for chunk, provider in self.provider_manager.stream_chat(
-            prompt, self.system_prompt, model=model
+            prompt, self.system_prompt, model=model, max_tokens=4096
         ):
             yield chunk, provider
 
@@ -154,6 +154,18 @@ class BaseAgent(abc.ABC):
                     return json.loads(fixed[start:end])
                 return json.loads(fixed)
             except json.JSONDecodeError as nested_e:
+                # Fallback 3: Try to salvage truncated JSON by finding last complete object
+                try:
+                    last_complete = cleaned_buffer.rfind('"}')
+                    if last_complete != -1:
+                        candidate = cleaned_buffer[: last_complete + 2] + "]}"
+                        fixed_candidate = re.sub(r",\s*([}\]])", r"\1", candidate)
+                        start = fixed_candidate.find("{")
+                        if start != -1:
+                            return json.loads(fixed_candidate[start:])
+                except Exception:
+                    pass
+
                 raise AgentValidationError(
                     f"Failed to parse JSON from agent stream even with recovery logic: {str(nested_e)}\nRaw Response: {buffer[:100]}..."
                 )
